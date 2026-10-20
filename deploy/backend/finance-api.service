@@ -1,0 +1,26 @@
+[Unit]
+Description=Finance System API (Gunicorn)
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=finance
+Group=finance
+WorkingDirectory=/opt/finance/backend
+Environment=DJANGO_SETTINGS_MODULE=config.settings
+EnvironmentFile=-/opt/finance/backend/.env
+ExecStart=/opt/finance/venv/bin/gunicorn config.wsgi:application -c /opt/finance/backend/gunicorn.conf.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/finance/backend
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

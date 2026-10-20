@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Django
+*.sqlite3
+db.sqlite3
+media/
+staticfiles/
+*.log
+
+# Environment / secrets
+.env
+.env.local
+.env.production
+backend/.env
+backend/.env.production
+frontend/.env.production
+!backend/.env.example
+!deploy/backend/.env.production.example
+!frontend/.env.production.example
+
+# Local isolated MySQL (dev convenience)
+.mysql-data/
+.mysql-local.ini
+.mysql-init.*
+.mysql-server.*
+.mysql-server.out
+.mysql-server.err
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Runtime
+backups/
+logs/
