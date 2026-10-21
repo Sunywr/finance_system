@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "apps.assets",
     "apps.investments",
     "apps.insights",
+    "apps.legacy",
 ]
 
 MIDDLEWARE = [
@@ -115,7 +116,9 @@ else:
     }
 
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+    },
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
@@ -127,6 +130,13 @@ LANGUAGE_CODE = "zh-hans"
 TIME_ZONE = "Asia/Shanghai"
 USE_I18N = True
 USE_TZ = True
+LEGACY_ARCHIVE_ROOT = Path(
+    env(
+        "LEGACY_ARCHIVE_ROOT",
+        str(BASE_DIR.parent / "backups" / "migration-20261021" / "archive"),
+    )
+)
+MIGRATION_REHEARSAL = env_bool("MIGRATION_REHEARSAL", False)
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
@@ -204,7 +214,11 @@ LOGGING = {
     },
     "root": {"handlers": ["console"], "level": "INFO"},
     "loggers": {
-        "django.db.backends": {"level": "WARNING", "handlers": ["console"], "propagate": False},
+        "django.db.backends": {
+            "level": "WARNING",
+            "handlers": ["console"],
+            "propagate": False,
+        },
         "apps": {"level": "INFO", "handlers": ["console"], "propagate": False},
     },
 }

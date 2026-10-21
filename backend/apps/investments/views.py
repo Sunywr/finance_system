@@ -2,6 +2,7 @@ from drf_spectacular.utils import extend_schema, extend_schema_view
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -194,22 +195,13 @@ class HoldingView(APIView):
     @extend_schema(summary="持仓与收益", tags=["investments"])
     def get(self, request):
         account = request.query_params.get("account")
-        data = portfolio_summary(request.user)
         if account:
-            data["items"] = [row for row in data["items"] if str(row["account"]) == str(account)]
-            invested = sum((row["total_buy"] for row in data["items"]), 0)
-            total_pnl = sum((row["total_pnl"] for row in data["items"]), 0)
-            data["totals"] = {
-                "cost": sum((row["cost"] for row in data["items"]), 0),
-                "market_value": sum((row["market_value"] for row in data["items"]), 0),
-                "unrealized_pnl": sum((row["unrealized_pnl"] for row in data["items"]), 0),
-                "realized_pnl": sum((row["realized_pnl"] for row in data["items"]), 0),
-                "dividends": sum((row["dividends"] for row in data["items"]), 0),
-                "total_pnl": total_pnl,
-                "invested": invested,
-                "return_rate": (total_pnl / invested * 100) if invested else 0,
-                "count": len(data["items"]),
-            }
+            try:
+                account = int(account)
+                if account < 1:raise ValueError()
+            except ValueError:
+                raise ValidationError({'account':'无效账户编号'})
+        data = portfolio_summary(request.user, account_id=account, include_auto_plans=request.query_params.get('include_auto_plans') in ('1','true'))
         return Response(data)
 
 

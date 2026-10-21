@@ -15,7 +15,15 @@ from apps.accounts.services import balances_for_owner, cash_balance
 from apps.assets.models import Asset
 from apps.assets.services import asset_value
 from apps.common.utils.crypto import decrypt_text
-from apps.common.utils.dates import add_months, date_range, day_end, day_start, month_bounds, next_payday, today_local
+from apps.common.utils.dates import (
+    add_months,
+    date_range,
+    day_end,
+    day_start,
+    month_bounds,
+    next_payday,
+    today_local,
+)
 from apps.common.utils.money import D, money, percent
 from apps.debts.models import CreditCard, CreditCardBill, DebtItem
 from apps.debts.services import card_liability
@@ -28,11 +36,17 @@ from .models import AIAnalysis, AIProviderConfig
 
 logger = logging.getLogger(__name__)
 
-CASH_TYPES = [Account.Type.SAVINGS, Account.Type.ALIPAY, Account.Type.WECHAT]
+CASH_TYPES = [
+    Account.Type.SAVINGS,
+    Account.Type.ALIPAY,
+    Account.Type.WECHAT,
+    Account.Type.WALLET,
+]
 ASSET_TYPES = [
     Account.Type.SAVINGS,
     Account.Type.ALIPAY,
     Account.Type.WECHAT,
+    Account.Type.WALLET,
     Account.Type.STOCK,
     Account.Type.WEALTH,
     Account.Type.PROVIDENT_FUND_MAIN,
@@ -79,7 +93,9 @@ def period_summary(owner, start, end):
         qs.filter(category__kind__in=[Category.Kind.INVESTMENT, Category.Kind.STOCK]),
         type=Transaction.Type.EXPENSE,
     )
-    card_repayment = _sum(qs, type=Transaction.Type.TRANSFER_OUT, credit_card__isnull=False)
+    card_repayment = _sum(
+        qs, type=Transaction.Type.TRANSFER_OUT, credit_card__isnull=False
+    )
     periodic_cash = _sum(
         qs,
         type=Transaction.Type.EXPENSE,
@@ -107,7 +123,9 @@ def period_summary(owner, start, end):
         "investment_out": investment_out,
         "card_repayment": card_repayment,
         "periodic_cash": periodic_cash,
-        "savings_rate": percent(income - living_expense, income) if income > 0 else D("0"),
+        "savings_rate": (
+            percent(income - living_expense, income) if income > 0 else D("0")
+        ),
         "category_breakdown": [
             {
                 "category_id": row["category__id"],
@@ -124,7 +142,9 @@ def _cash_due(item, offset_cache):
     if item.kind == DebtItem.Kind.CREDIT_CARD:
         return payable
     if item.kind == DebtItem.Kind.PERIODIC:
-        channel = item.recurring_debt.payment_channel if item.recurring_debt_id else "CASH"
+        channel = (
+            item.recurring_debt.payment_channel if item.recurring_debt_id else "CASH"
+        )
         return D("0") if channel in ("PROVIDENT_FUND", "CREDIT_CARD") else payable
     if item.kind == DebtItem.Kind.MORTGAGE and item.loan_schedule_id:
         loan = item.loan_schedule.loan
@@ -134,7 +154,11 @@ def _cash_due(item, offset_cache):
         if loan.id not in offset_cache:
             offset_cache[loan.id] = simulate_offset(loan)
         row = next(
-            (item_row for item_row in offset_cache[loan.id]["rows"] if item_row["period_no"] == item.period_no),
+            (
+                item_row
+                for item_row in offset_cache[loan.id]["rows"]
+                if item_row["period_no"] == item.period_no
+            ),
             None,
         )
         return D(row["cash_due"]) if row else payable
@@ -147,7 +171,11 @@ def upcoming_payments(owner, start, end, offset_cache=None):
         DebtItem.objects.filter(owner=owner)
         .exclude(status__in=[DebtItem.Status.PAID, DebtItem.Status.CANCELLED])
         .filter(due_date__lte=end)
-        .select_related("bill__card", "recurring_debt", "loan_schedule__loan__offset_plan__pf_account")
+        .select_related(
+            "bill__card",
+            "recurring_debt",
+            "loan_schedule__loan__offset_plan__pf_account",
+        )
         .order_by("due_date", "id")
     )
     rows = []
@@ -195,10 +223,17 @@ def upcoming_payments(owner, start, end, offset_cache=None):
 def net_worth(owner):
     balances = balances_for_owner(owner)
     accounts = list(Account.objects.filter(owner=owner, is_active=True))
-    account_total = sum((balances.get(account.id, D(account.opening_balance)) for account in accounts), D("0"))
+    account_total = sum(
+        (balances.get(account.id, D(account.opening_balance)) for account in accounts),
+        D("0"),
+    )
     investment = portfolio_summary(owner)["totals"]
     physical_assets = sum(
-        (asset_value(asset) for asset in Asset.objects.filter(owner=owner, status=Asset.Status.ACTIVE)), D("0")
+        (
+            asset_value(asset)
+            for asset in Asset.objects.filter(owner=owner, status=Asset.Status.ACTIVE)
+        ),
+        D("0"),
     )
     cards = CreditCard.objects.filter(owner=owner, is_active=True)
     card_debt = sum((card_liability(card) for card in cards), D("0"))
@@ -206,7 +241,11 @@ def net_worth(owner):
     for item in DebtItem.objects.filter(
         owner=owner,
         kind=DebtItem.Kind.PERIODIC,
-        status__in=[DebtItem.Status.PENDING, DebtItem.Status.PARTIAL, DebtItem.Status.OVERDUE],
+        status__in=[
+            DebtItem.Status.PENDING,
+            DebtItem.Status.PARTIAL,
+            DebtItem.Status.OVERDUE,
+        ],
     ):
         periodic_debt += item.payable_amount
     loan_debt = D("0")
@@ -261,7 +300,9 @@ def monthly_series(owner, months_back=6, months_forward=3):
         )
     recent = [row for row in series[-3:] if row["actual"]]
     avg_expense = (
-        sum((row["expense"] for row in recent), D("0")) / len(recent) if recent else D("0")
+        sum((row["expense"] for row in recent), D("0")) / len(recent)
+        if recent
+        else D("0")
     )
     salary = D(setting.salary_amount) if setting.salary_amount is not None else D("0")
     balance = series[-1]["ending_cash"] if series else cash_balance(owner)
@@ -269,12 +310,16 @@ def monthly_series(owner, months_back=6, months_forward=3):
         month_start = add_months(current_start, index)
         month_end = month_bounds(month_start)[1]
         month_end_date = month_end
-        debt_items = DebtItem.objects.filter(
-            owner=owner,
-            due_date__gte=month_start,
-            due_date__lte=month_end_date,
-        ).exclude(status__in=[DebtItem.Status.PAID, DebtItem.Status.CANCELLED]).select_related(
-            "recurring_debt", "loan_schedule__loan__offset_plan__pf_account"
+        debt_items = (
+            DebtItem.objects.filter(
+                owner=owner,
+                due_date__gte=month_start,
+                due_date__lte=month_end_date,
+            )
+            .exclude(status__in=[DebtItem.Status.PAID, DebtItem.Status.CANCELLED])
+            .select_related(
+                "recurring_debt", "loan_schedule__loan__offset_plan__pf_account"
+            )
         )
         offset_cache = {}
         card_repayment = D("0")
@@ -518,7 +563,7 @@ def call_provider(provider, messages, max_tokens=None, retries_override=None):
                 raise RuntimeError(
                     "AI 服务只返回了 reasoning_content，没有最终回答。"
                     "通常是 max_tokens 太小被思考过程耗尽；建议增大 max_tokens，"
-                    "或在请求体中设置 {\"thinking\": {\"type\": \"disabled\"}}。"
+                    '或在请求体中设置 {"thinking": {"type": "disabled"}}。'
                 )
             raise RuntimeError("AI 服务返回空内容，请检查模型、提示词和 max_tokens。")
         tokens = (data.get("usage") or {}).get("total_tokens", 0)
@@ -547,7 +592,12 @@ def generate_analysis(
     period_end=None,
     custom_prompt="",
 ):
-    provider = provider or AIProviderConfig.objects.filter(owner=owner, enabled=True, is_default=True).first()
+    provider = (
+        provider
+        or AIProviderConfig.objects.filter(
+            owner=owner, enabled=True, is_default=True
+        ).first()
+    )
     if not provider:
         provider = AIProviderConfig.objects.filter(owner=owner, enabled=True).first()
     if not provider:

@@ -10,7 +10,11 @@ from rest_framework.exceptions import ValidationError
 from apps.accounts.models import Account
 from apps.common.utils.money import D, money, percent
 from apps.ledger.models import Category, Transaction
-from apps.ledger.services import channel_for_account, create_transaction, system_category
+from apps.ledger.services import (
+    channel_for_account,
+    create_transaction,
+    system_category,
+)
 
 from apps.common.utils.dates import today_local
 
@@ -55,10 +59,22 @@ def _jsonable(value):
 
 
 TRADABLE_ACCOUNTS = {
+    Instrument.Type.CONVERTIBLE_BOND: {Account.Type.STOCK},
+    Instrument.Type.GOLD: {Account.Type.STOCK, Account.Type.WEALTH},
     Instrument.Type.STOCK: {Account.Type.STOCK},
     Instrument.Type.ETF: {Account.Type.STOCK, Account.Type.WEALTH},
-    Instrument.Type.OTC_FUND: {Account.Type.STOCK, Account.Type.WEALTH, Account.Type.ALIPAY, Account.Type.WECHAT},
-    Instrument.Type.WEALTH: {Account.Type.STOCK, Account.Type.WEALTH, Account.Type.ALIPAY, Account.Type.WECHAT},
+    Instrument.Type.OTC_FUND: {
+        Account.Type.STOCK,
+        Account.Type.WEALTH,
+        Account.Type.ALIPAY,
+        Account.Type.WECHAT,
+    },
+    Instrument.Type.WEALTH: {
+        Account.Type.STOCK,
+        Account.Type.WEALTH,
+        Account.Type.ALIPAY,
+        Account.Type.WECHAT,
+    },
 }
 
 
@@ -66,7 +82,10 @@ def _validate_account(account, instrument):
     allowed = TRADABLE_ACCOUNTS.get(instrument.type, set())
     if account.type not in allowed:
         raise ValidationError({"account": "该账户不能交易此类型标的"})
-    if account.type in (Account.Type.ALIPAY, Account.Type.WECHAT) and instrument.type not in (
+    if account.type in (
+        Account.Type.ALIPAY,
+        Account.Type.WECHAT,
+    ) and instrument.type not in (
         Instrument.Type.WEALTH,
         Instrument.Type.OTC_FUND,
     ):
@@ -74,7 +93,16 @@ def _validate_account(account, instrument):
 
 
 def _category_for(instrument, owner):
-    kind = Category.Kind.STOCK if instrument.type == Instrument.Type.STOCK else Category.Kind.INVESTMENT
+    kind = (
+        Category.Kind.STOCK
+        if instrument.type
+        in (
+            Instrument.Type.STOCK,
+            Instrument.Type.ETF,
+            Instrument.Type.CONVERTIBLE_BOND,
+        )
+        else Category.Kind.INVESTMENT
+    )
     return system_category(owner, kind)
 
 
@@ -117,6 +145,20 @@ def _position_state(trades):
     }
 
 
+def _current_trade_state(owner, account, instrument):
+    from apps.legacy.positions import imported_holdings
+
+    _, imported = imported_holdings(owner, account.id)
+    row = next((r for r in imported if r["instrument"] == instrument.id), None)
+    if row is not None:
+        return {"quantity": row["quantity"], "avg_cost": row["avg_cost"]}
+    return _position_state(
+        Trade.objects.filter(
+            owner=owner, account=account, instrument=instrument
+        ).order_by("trade_date", "id")
+    )
+
+
 def create_trade(
     *,
     owner,
@@ -138,6 +180,21 @@ def create_trade(
     if not instrument.is_active:
         raise ValidationError({"instrument": "标的已停用"})
     _validate_account(account, instrument)
+    from apps.legacy.models import PositionBasis
+
+    imported_basis = PositionBasis.objects.filter(
+        owner=owner, account=account, instrument=instrument, is_active=True
+    )
+    if (
+        instrument.valuation_mode != Instrument.ValuationMode.MARKET
+        and imported_basis.exists()
+    ):
+        if sum((b.quantity for b in imported_basis), D("0")) == 0 and any(
+            b.cost != 0 for b in imported_basis
+        ):
+            raise ValidationError(
+                {"quantity": "历史持仓没有可核实的份额，请先核实份额与估值后再交易"}
+            )
     quantity = D(quantity)
     price = D(price)
     fee = money(fee)
@@ -157,11 +214,11 @@ def create_trade(
     elif side == Trade.Side.SELL:
         if quantity <= 0 or price <= 0:
             raise ValidationError({"quantity": "卖出数量和价格必须大于 0"})
-        state = _position_state(
-            Trade.objects.filter(owner=owner, account=account, instrument=instrument).order_by("trade_date", "id")
-        )
+        state = _current_trade_state(owner, account, instrument)
         if D(state["quantity"]) < quantity:
-            raise ValidationError({"quantity": f"持仓不足，当前持仓 {state['quantity']}"})
+            raise ValidationError(
+                {"quantity": f"持仓不足，当前持仓 {state['quantity']}"}
+            )
         level_operation = Trade.Operation.REDUCE
         total = money(quantity * price - fee)
         if total <= 0:
@@ -191,9 +248,7 @@ def create_trade(
         )
         realized = None
         if side == Trade.Side.SELL:
-            state = _position_state(
-                Trade.objects.filter(owner=owner, account=account, instrument=instrument).order_by("trade_date", "id")
-            )
+            state = _current_trade_state(owner, account, instrument)
             avg = state["avg_cost"]
             realized = money(total - avg * quantity)
         trade = Trade.objects.create(
@@ -227,8 +282,13 @@ def latest_price(instrument):
     return D("0"), "none", True
 
 
-def holdings(owner, account_id=None):
-    qs = Trade.objects.filter(owner=owner).select_related("account", "instrument", "transaction")
+def holdings(owner, account_id=None, include_auto_plans=False):
+    from apps.legacy.positions import imported_holdings
+
+    imported_keys, imported_rows = imported_holdings(owner, account_id, include_auto_plans)
+    qs = Trade.objects.filter(owner=owner).select_related(
+        "account", "instrument", "transaction"
+    )
     if account_id:
         qs = qs.filter(account_id=account_id)
     grouped = {}
@@ -237,28 +297,47 @@ def holdings(owner, account_id=None):
     today = timezone.localdate()
     rows = []
     for (account_id_value, instrument_id), trades in grouped.items():
+        if (account_id_value, instrument_id) in imported_keys:
+            continue
         instrument = trades[0].instrument
         account = trades[0].account
         state = _position_state(trades)
         quote = getattr(instrument, "quote", None)
         price, price_source, stale = latest_price(instrument)
         if instrument.valuation_mode == Instrument.ValuationMode.ACCRUAL:
-            days = max((today - state["first_trade"].trade_date.date()).days, 0) if state["first_trade"] else 0
+            days = (
+                max((today - state["first_trade"].trade_date.date()).days, 0)
+                if state["first_trade"]
+                else 0
+            )
             estimated_value = D(state["cost"]) * (
-                Decimal("1") + D(instrument.annual_rate) / Decimal("100") * Decimal(days) / Decimal("365")
+                Decimal("1")
+                + D(instrument.annual_rate)
+                / Decimal("100")
+                * Decimal(days)
+                / Decimal("365")
             )
             market_value = money(estimated_value)
-            price = money(market_value / state["quantity"]) if state["quantity"] > 0 else D("0")
+            price = (
+                money(market_value / state["quantity"])
+                if state["quantity"] > 0
+                else D("0")
+            )
         else:
             market_value = money(state["quantity"] * price)
         unrealized = market_value - D(state["cost"])
         total_pnl = unrealized + D(state["realized"]) + D(state["dividends"])
         last_trade = state["last_trade"]
-        price_trade = next((trade for trade in reversed(trades) if trade.side != Trade.Side.DIVIDEND), None)
+        price_trade = next(
+            (trade for trade in reversed(trades) if trade.side != Trade.Side.DIVIDEND),
+            None,
+        )
         since_return = None
         days_since = None
         if price_trade and D(price_trade.price) > 0:
-            since_return = (price - D(price_trade.price)) / D(price_trade.price) * Decimal("100")
+            since_return = (
+                (price - D(price_trade.price)) / D(price_trade.price) * Decimal("100")
+            )
             days_since = max((today - price_trade.trade_date.date()).days, 0)
         rows.append(
             {
@@ -285,32 +364,59 @@ def holdings(owner, account_id=None):
                 "is_stale": stale,
                 "last_trade_date": price_trade.trade_date if price_trade else None,
                 "last_trade_price": price_trade.price if price_trade else None,
-                "since_last_trade_return": since_return.quantize(Decimal("0.01")) if since_return is not None else None,
+                "since_last_trade_return": (
+                    since_return.quantize(Decimal("0.01"))
+                    if since_return is not None
+                    else None
+                ),
                 "days_since_last_trade": days_since,
                 "quote_change_pct": quote.change_pct if quote else None,
             }
         )
+    rows.extend(imported_rows)
     rows.sort(key=lambda item: (-float(item["market_value"]), item["symbol"]))
     return rows
 
 
-def portfolio_summary(owner):
-    rows = holdings(owner)
+def portfolio_summary(owner, include_auto_plans=False, account_id=None):
+    rows = holdings(owner, account_id=account_id, include_auto_plans=include_auto_plans)
     totals = {
         "cost": sum((D(row["cost"]) for row in rows), D("0")),
         "market_value": sum((D(row["market_value"]) for row in rows), D("0")),
         "unrealized_pnl": sum((D(row["unrealized_pnl"]) for row in rows), D("0")),
-        "realized_pnl": sum((D(row["realized_pnl"]) for row in rows), D("0")),
-        "dividends": sum((D(row["dividends"]) for row in rows), D("0")),
+        "realized_pnl": (
+            None
+            if any(row["realized_pnl"] is None for row in rows)
+            else sum((D(row["realized_pnl"]) for row in rows), D("0"))
+        ),
+        "dividends": (
+            None
+            if any(row["dividends"] is None for row in rows)
+            else sum((D(row["dividends"]) for row in rows), D("0"))
+        ),
         "total_pnl": sum((D(row["total_pnl"]) for row in rows), D("0")),
     }
-    invested = sum((D(row["total_buy"]) for row in rows), D("0"))
+    invested = (
+        None
+        if any(row["total_buy"] is None for row in rows)
+        else sum((D(row["total_buy"]) for row in rows), D("0"))
+    )
     totals["invested"] = invested
-    totals["return_rate"] = percent(totals["total_pnl"], invested)
+    totals["return_rate"] = (
+        percent(totals["total_pnl"], invested) if invested is not None else None
+    )
     totals["count"] = len(rows)
     by_account = {}
     for row in rows:
-        bucket = by_account.setdefault(row["account"], {"account": row["account"], "account_name": row["account_name"], "market_value": D("0"), "total_pnl": D("0")})
+        bucket = by_account.setdefault(
+            row["account"],
+            {
+                "account": row["account"],
+                "account_name": row["account_name"],
+                "market_value": D("0"),
+                "total_pnl": D("0"),
+            },
+        )
         bucket["market_value"] += D(row["market_value"])
         bucket["total_pnl"] += D(row["total_pnl"])
     return {"totals": totals, "by_account": list(by_account.values()), "items": rows}
@@ -337,12 +443,23 @@ def indicator_data(instrument, limit=180):
     rows = _bar_rows(instrument, limit=max(limit, 120))
     computed = build_indicator_rows(rows)
     signals = latest_signals(rows, computed)
-    return {"items": computed[-limit:], "signals": signals, "latest": computed[-1] if computed else None}
+    return {
+        "items": computed[-limit:],
+        "signals": signals,
+        "latest": computed[-1] if computed else None,
+    }
 
 
 def sync_instrument(instrument, days=300):
-    if instrument.valuation_mode != Instrument.ValuationMode.MARKET or instrument.exchange == Instrument.Exchange.OTC:
-        return {"instrument": instrument.id, "status": "skipped", "reason": "非行情估值标的"}
+    if (
+        instrument.valuation_mode != Instrument.ValuationMode.MARKET
+        or instrument.exchange == Instrument.Exchange.OTC
+    ):
+        return {
+            "instrument": instrument.id,
+            "status": "skipped",
+            "reason": "非行情估值标的",
+        }
     try:
         quote_data = fetch_quote(instrument)
         if quote_data:
@@ -369,7 +486,10 @@ def sync_instrument(instrument, days=300):
         updated = 0
         if bar_rows:
             dates = [row["trade_date"] for row in bar_rows]
-            existing = {bar.trade_date: bar for bar in instrument.bars.filter(trade_date__in=dates)}
+            existing = {
+                bar.trade_date: bar
+                for bar in instrument.bars.filter(trade_date__in=dates)
+            }
             to_create = []
             to_update = []
             for row in bar_rows:
@@ -523,7 +643,9 @@ def _exchange_for_symbol(symbol):
 
 
 def _technical_signals(symbol, exchange):
-    fake = Instrument(symbol=symbol, exchange=exchange, name="", type=Instrument.Type.STOCK)
+    fake = Instrument(
+        symbol=symbol, exchange=exchange, name="", type=Instrument.Type.STOCK
+    )
     rows = fetch_bars(fake, 160)
     computed = build_indicator_rows(rows)
     return latest_signals(rows, computed)
@@ -543,24 +665,52 @@ def run_screener(owner, criteria=None, preset=None):
             universe = fetch_spot_universe(max_pages=5)
         dividend_map = {
             item.symbol: D(item.dividend_yield)
-            for item in Instrument.objects.filter(owner=owner, type=Instrument.Type.STOCK)
+            for item in Instrument.objects.filter(
+                owner=owner, type=Instrument.Type.STOCK
+            )
             if item.dividend_yield is not None
         }
         instrument_map = {
             item.symbol: item
-            for item in Instrument.objects.filter(owner=owner, type=Instrument.Type.STOCK)
+            for item in Instrument.objects.filter(
+                owner=owner, type=Instrument.Type.STOCK
+            )
         }
         industries = [item for item in (merged.get("industries") or []) if item]
-        min_price = D(merged.get("min_price")) if merged.get("min_price") is not None else None
-        max_price = D(merged.get("max_price")) if merged.get("max_price") is not None else None
+        min_price = (
+            D(merged.get("min_price")) if merged.get("min_price") is not None else None
+        )
+        max_price = (
+            D(merged.get("max_price")) if merged.get("max_price") is not None else None
+        )
         max_pe = D(merged.get("max_pe")) if merged.get("max_pe") is not None else None
         min_pe = D(merged.get("min_pe")) if merged.get("min_pe") is not None else None
         max_pb = D(merged.get("max_pb")) if merged.get("max_pb") is not None else None
-        min_cap = D(merged.get("min_market_cap")) if merged.get("min_market_cap") is not None else None
-        max_cap = D(merged.get("max_market_cap")) if merged.get("max_market_cap") is not None else None
-        min_turnover = D(merged.get("min_turnover")) if merged.get("min_turnover") is not None else None
-        min_volume_ratio = D(merged.get("min_volume_ratio")) if merged.get("min_volume_ratio") is not None else None
-        min_dividend = D(merged.get("min_dividend_yield")) if merged.get("min_dividend_yield") else None
+        min_cap = (
+            D(merged.get("min_market_cap"))
+            if merged.get("min_market_cap") is not None
+            else None
+        )
+        max_cap = (
+            D(merged.get("max_market_cap"))
+            if merged.get("max_market_cap") is not None
+            else None
+        )
+        min_turnover = (
+            D(merged.get("min_turnover"))
+            if merged.get("min_turnover") is not None
+            else None
+        )
+        min_volume_ratio = (
+            D(merged.get("min_volume_ratio"))
+            if merged.get("min_volume_ratio") is not None
+            else None
+        )
+        min_dividend = (
+            D(merged.get("min_dividend_yield"))
+            if merged.get("min_dividend_yield")
+            else None
+        )
         technical = set(merged.get("technical") or [])
 
         candidates = []
@@ -568,7 +718,11 @@ def run_screener(owner, criteria=None, preset=None):
             price = D(item["price"])
             pe = D(item["pe"]) if item.get("pe") is not None else None
             pb = D(item["pb"]) if item.get("pb") is not None else None
-            market_cap_yi = D(item["market_cap"]) / Decimal("100000000") if item.get("market_cap") else None
+            market_cap_yi = (
+                D(item["market_cap"]) / Decimal("100000000")
+                if item.get("market_cap")
+                else None
+            )
             dividend = dividend_map.get(item["symbol"])
             if min_price is not None and price < min_price:
                 continue
@@ -580,15 +734,24 @@ def run_screener(owner, criteria=None, preset=None):
                 continue
             if max_pb is not None and (pb is None or pb <= 0 or pb > max_pb):
                 continue
-            if min_cap is not None and (market_cap_yi is None or market_cap_yi < min_cap):
+            if min_cap is not None and (
+                market_cap_yi is None or market_cap_yi < min_cap
+            ):
                 continue
-            if max_cap is not None and (market_cap_yi is None or market_cap_yi > max_cap):
+            if max_cap is not None and (
+                market_cap_yi is None or market_cap_yi > max_cap
+            ):
                 continue
             if min_turnover is not None and D(item.get("turnover") or 0) < min_turnover:
                 continue
-            if min_volume_ratio is not None and D(item.get("volume_ratio") or 0) < min_volume_ratio:
+            if (
+                min_volume_ratio is not None
+                and D(item.get("volume_ratio") or 0) < min_volume_ratio
+            ):
                 continue
-            if min_dividend is not None and (dividend is None or dividend < min_dividend):
+            if min_dividend is not None and (
+                dividend is None or dividend < min_dividend
+            ):
                 continue
             if industries and item.get("industry") not in industries:
                 continue
@@ -607,7 +770,9 @@ def run_screener(owner, criteria=None, preset=None):
                 reasons.append(f"市值 {market_cap_yi.quantize(Decimal('0.01'))}亿")
             if item.get("change_60d") is not None:
                 change_60 = D(item["change_60d"])
-                score += max(Decimal("-15"), min(Decimal("15"), -change_60)) * Decimal("0.5")
+                score += max(Decimal("-15"), min(Decimal("15"), -change_60)) * Decimal(
+                    "0.5"
+                )
             candidates.append(
                 {
                     **item,
@@ -622,7 +787,9 @@ def run_screener(owner, criteria=None, preset=None):
             checked = []
             for item in candidates[: int(merged.get("technical_check_limit", 15))]:
                 try:
-                    signals = _technical_signals(item["symbol"], _exchange_for_symbol(item["symbol"]))
+                    signals = _technical_signals(
+                        item["symbol"], _exchange_for_symbol(item["symbol"])
+                    )
                 except Exception:
                     continue
                 if all(bool(signals.get(key)) for key in technical):
@@ -692,7 +859,9 @@ def refresh_market_regime(owner):
     sectors = {}
     for item in universe:
         name = item.get("industry") or "其他"
-        bucket = sectors.setdefault(name, {"name": name, "count": 0, "sum": Decimal("0"), "advance": 0})
+        bucket = sectors.setdefault(
+            name, {"name": name, "count": 0, "sum": Decimal("0"), "advance": 0}
+        )
         bucket["count"] += 1
         bucket["sum"] += D(item.get("change_pct") or 0)
         if D(item.get("change_pct") or 0) > 0:
@@ -707,7 +876,9 @@ def refresh_market_regime(owner):
                 "name": bucket["name"],
                 "avg_change": avg.quantize(Decimal("0.01")),
                 "count": bucket["count"],
-                "advance_ratio": (Decimal(bucket["advance"]) / bucket["count"] * 100).quantize(Decimal("0.01")),
+                "advance_ratio": (
+                    Decimal(bucket["advance"]) / bucket["count"] * 100
+                ).quantize(Decimal("0.01")),
             }
         )
     sector_rows.sort(key=lambda item: item["avg_change"], reverse=True)
@@ -724,7 +895,11 @@ def refresh_market_regime(owner):
         if prev:
             score += (D(computed[-1]["close"]) / prev - 1) * 100 * 2
     score = max(Decimal("-100"), min(Decimal("100"), score))
-    regime = MarketRegime.Regime.BULL if score >= 20 else MarketRegime.Regime.BEAR if score <= -20 else MarketRegime.Regime.NEUTRAL
+    regime = (
+        MarketRegime.Regime.BULL
+        if score >= 20
+        else MarketRegime.Regime.BEAR if score <= -20 else MarketRegime.Regime.NEUTRAL
+    )
     explanation = (
         f"沪深300 {close or '—'}，MA20 {ma20 or '—'}，MA60 {ma60 or '—'}；"
         f"上涨 {advance} 家、下跌 {decline} 家，宽度 {float(breadth):.2%}；"
@@ -775,14 +950,20 @@ def sync_reports(instrument):
         )
     count = 0
     for (report_type, period_end), data in merged.items():
-        released = data.get("actual_date") is not None or data.get("revenue") is not None
+        released = (
+            data.get("actual_date") is not None or data.get("revenue") is not None
+        )
         ReportEvent.objects.update_or_create(
             instrument=instrument,
             report_type=report_type,
             period_end=period_end,
             defaults={
                 **data,
-                "status": ReportEvent.Status.RELEASED if released else ReportEvent.Status.SCHEDULED,
+                "status": (
+                    ReportEvent.Status.RELEASED
+                    if released
+                    else ReportEvent.Status.SCHEDULED
+                ),
                 "source": "eastmoney",
             },
         )
@@ -792,9 +973,15 @@ def sync_reports(instrument):
 
 def report_trend(instrument):
     events = list(instrument.reports.order_by("-period_end")[:4])
-    released = [event for event in events if event.status == ReportEvent.Status.RELEASED]
-    revenue_yoy = [D(event.revenue_yoy) for event in released if event.revenue_yoy is not None]
-    profit_yoy = [D(event.profit_yoy) for event in released if event.profit_yoy is not None]
+    released = [
+        event for event in events if event.status == ReportEvent.Status.RELEASED
+    ]
+    revenue_yoy = [
+        D(event.revenue_yoy) for event in released if event.revenue_yoy is not None
+    ]
+    profit_yoy = [
+        D(event.profit_yoy) for event in released if event.profit_yoy is not None
+    ]
     avg_revenue = sum(revenue_yoy, D("0")) / len(revenue_yoy) if revenue_yoy else None
     avg_profit = sum(profit_yoy, D("0")) / len(profit_yoy) if profit_yoy else None
     if avg_profit is not None and avg_revenue is not None:
@@ -806,7 +993,11 @@ def report_trend(instrument):
             direction = "分化"
     else:
         direction = "数据不足"
-    upcoming = instrument.reports.filter(status=ReportEvent.Status.SCHEDULED).order_by("disclosure_date").first()
+    upcoming = (
+        instrument.reports.filter(status=ReportEvent.Status.SCHEDULED)
+        .order_by("disclosure_date")
+        .first()
+    )
     return {
         "direction": direction,
         "avg_revenue_yoy": avg_revenue,
@@ -845,14 +1036,26 @@ def sync_ipo_calendar():
 def ipo_list(owner):
     rows = list(IPOCalendar.objects.all()[:100])
     stock_market_value = sum(
-        (D(row["market_value"]) for row in holdings(owner) if row["instrument_type"] == Instrument.Type.STOCK),
+        (
+            D(row["market_value"])
+            for row in holdings(owner)
+            if row["instrument_type"] == Instrument.Type.STOCK
+        ),
         D("0"),
     )
     result = []
     for row in rows:
-        required = D(row.requirement_market_value) if row.requirement_market_value is not None else None
-        required_yuan = required * 10000 if required is not None and required < 100000 else required
-        eligible = None if required_yuan is None else stock_market_value >= required_yuan
+        required = (
+            D(row.requirement_market_value)
+            if row.requirement_market_value is not None
+            else None
+        )
+        required_yuan = (
+            required * 10000 if required is not None and required < 100000 else required
+        )
+        eligible = (
+            None if required_yuan is None else stock_market_value >= required_yuan
+        )
         result.append(
             {
                 "id": row.id,
@@ -901,7 +1104,9 @@ def grid_plan(instrument):
         "sell_price": sell_price,
         "step": step,
         "bands": bands,
-        "potential_reduction_pct": ((sell_price - buy_price) / buy_price * 100).quantize(Decimal("0.01")),
+        "potential_reduction_pct": (
+            (sell_price - buy_price) / buy_price * 100
+        ).quantize(Decimal("0.01")),
         "note": "高抛低吸/网格仅做成本测算，不构成交易建议",
     }
 
@@ -918,19 +1123,38 @@ def analyze_signals(instrument):
     ma60 = D(latest.get("ma60")) if latest.get("ma60") is not None else None
     rsi6 = D(latest.get("rsi6")) if latest.get("rsi6") is not None else None
     kdj_j = D(latest.get("kdj_j")) if latest.get("kdj_j") is not None else None
-    boll_upper = D(latest.get("boll_upper")) if latest.get("boll_upper") is not None else None
-    macd_ok = latest.get("macd_dif") is not None and latest.get("macd_dea") is not None and D(latest["macd_dif"]) >= D(latest["macd_dea"])
+    boll_upper = (
+        D(latest.get("boll_upper")) if latest.get("boll_upper") is not None else None
+    )
+    macd_ok = (
+        latest.get("macd_dif") is not None
+        and latest.get("macd_dea") is not None
+        and D(latest["macd_dif"]) >= D(latest["macd_dea"])
+    )
     results = []
     today = today_local()
-    if close > 0 and ma20 and close > ma20 * Decimal("0.97") and close < ma20 * Decimal("1.03"):
-        if (ma60 is None or close > ma60) and (macd_ok or (latest.get("kdj_k") is not None and D(latest["kdj_k"]) < 30) or signals.get("macd_golden_cross")):
+    if (
+        close > 0
+        and ma20
+        and close > ma20 * Decimal("0.97")
+        and close < ma20 * Decimal("1.03")
+    ):
+        if (ma60 is None or close > ma60) and (
+            macd_ok
+            or (latest.get("kdj_k") is not None and D(latest["kdj_k"]) < 30)
+            or signals.get("macd_golden_cross")
+        ):
             results.append(
                 {
                     "signal_type": StrategySignal.Type.BUY_POINT,
                     "price_low": close * Decimal("0.98"),
                     "price_high": close * Decimal("1.01"),
                     "confidence": 70,
-                    "reasons": ["回踩 MA20 附近", "趋势未破 MA60", "MACD/KDJ 出现低吸条件"],
+                    "reasons": [
+                        "回踩 MA20 附近",
+                        "趋势未破 MA60",
+                        "MACD/KDJ 出现低吸条件",
+                    ],
                     "metrics": _jsonable(latest),
                 }
             )
@@ -950,7 +1174,11 @@ def analyze_signals(instrument):
                     "metrics": _jsonable(latest),
                 }
             )
-    if instrument.dividend_yield is not None and D(instrument.dividend_yield) >= 3 and (ma60 is None or close > ma60):
+    if (
+        instrument.dividend_yield is not None
+        and D(instrument.dividend_yield) >= 3
+        and (ma60 is None or close > ma60)
+    ):
         results.append(
             {
                 "signal_type": StrategySignal.Type.DIVIDEND,

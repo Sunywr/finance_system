@@ -28,6 +28,7 @@ const router = createRouter({
         { path: 'intelligence', name: 'intelligence', component: () => import('@/views/Intelligence.vue'), meta: { title: '投资智能' } },
         { path: 'ai', name: 'ai', component: () => import('@/views/AI.vue'), meta: { title: 'AI 分析' } },
         { path: 'settings', name: 'settings', component: () => import('@/views/Settings.vue'), meta: { title: '设置' } },
+        { path: 'history', name: 'history', component: () => import('@/views/History.vue'), meta: { title: '家庭与历史资料' } },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' },

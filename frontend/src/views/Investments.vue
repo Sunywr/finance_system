@@ -14,8 +14,8 @@
 
     <div class="card-grid">
       <StatCard label="持仓市值" :value="`¥ ${money(totals.market_value)}`" :extra="`${totals.count || 0} 个持仓`" />
-      <StatCard label="持仓成本" :value="`¥ ${money(totals.cost)}`" :extra="`累计买入 ¥${money(totals.invested)}`" />
-      <StatCard label="累计收益" :value="`¥ ${money(totals.total_pnl)}`" :extra="`已实现 ¥${money(totals.realized_pnl)} / 分红 ¥${money(totals.dividends)}`" :tone="Number(totals.total_pnl) >= 0 ? 'amount-positive' : 'amount-negative'" />
+      <StatCard label="持仓成本" :value="`¥ ${money(totals.cost)}`" :extra="`累计买入 ${knownMoney(totals.invested)}`" />
+      <StatCard label="累计收益" :value="`¥ ${money(totals.total_pnl)}`" :extra="`已实现 ${knownMoney(totals.realized_pnl)} / 分红 ${knownMoney(totals.dividends)}`" :tone="Number(totals.total_pnl) >= 0 ? 'amount-positive' : 'amount-negative'" />
       <StatCard label="总收益率" :value="percent(totals.return_rate)" extra="累计收益 / 累计买入" :tone="Number(totals.return_rate) >= 0 ? 'amount-positive' : 'amount-negative'" />
     </div>
 
@@ -26,7 +26,7 @@
             <el-table-column label="标的" min-width="170">
               <template #default="{ row }">
                 <div class="symbol">{{ row.symbol }} <span class="muted">{{ row.name }}</span></div>
-                <div class="muted small">{{ row.account_name }} · {{ row.valuation_mode === 'ACCRUAL' ? '收益累计' : '行情估值' }}</div>
+                <div class="muted small">{{ row.account_name }} · {{ ({ ACCRUAL: '收益累计', MANUAL: '人工估值', YIELD_PER_10000: '万份收益' } as Record<string, string>)[row.valuation_mode] || '行情估值' }}</div>
               </template>
             </el-table-column>
             <el-table-column label="持仓" width="120" align="right">
@@ -210,6 +210,8 @@
             <el-option label="场内基金" value="ETF" />
             <el-option label="场外基金" value="OTC_FUND" />
             <el-option label="理财" value="WEALTH" />
+            <el-option label="可转债" value="CONVERTIBLE_BOND" />
+            <el-option label="黄金" value="GOLD" />
           </el-select>
         </el-form-item>
         <el-form-item label="市场">
@@ -227,6 +229,8 @@
           <el-radio-group v-model="instrumentForm.valuation_mode">
             <el-radio-button value="MARKET">行情估值</el-radio-button>
             <el-radio-button value="ACCRUAL">收益累计</el-radio-button>
+            <el-radio-button value="MANUAL">手工估值</el-radio-button>
+            <el-radio-button value="YIELD_PER_10000">万份收益</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item v-if="instrumentForm.valuation_mode === 'ACCRUAL'" label="年化(%)">
@@ -274,6 +278,8 @@ import { ElMessage } from 'element-plus'
 import StatCard from '@/components/StatCard.vue'
 import { api, unwrap } from '@/api'
 import { errorMessage, money, percent } from '@/api/client'
+
+const knownMoney = (value: unknown) => value === null || value === undefined ? '待核实' : `¥${money(value)}`
 
 const activeTab = ref('holdings')
 const holdings = ref<any[]>([])

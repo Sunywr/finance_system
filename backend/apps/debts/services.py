@@ -31,7 +31,11 @@ def _day_end(value):
 def get_or_create_bill(card, period_start, period_end, status=None):
     today = today_local()
     if status is None:
-        status = CreditCardBill.Status.CLOSED if period_end < today else CreditCardBill.Status.OPEN
+        status = (
+            CreditCardBill.Status.CLOSED
+            if period_end < today
+            else CreditCardBill.Status.OPEN
+        )
     bill, created = CreditCardBill.objects.get_or_create(
         owner=card.owner,
         card=card,
@@ -40,7 +44,9 @@ def get_or_create_bill(card, period_start, period_end, status=None):
         defaults={
             "due_date": period_due_date(card, period_end),
             "status": status,
-            "generated_at": timezone.now() if status == CreditCardBill.Status.CLOSED else None,
+            "generated_at": (
+                timezone.now() if status == CreditCardBill.Status.CLOSED else None
+            ),
         },
     )
     return bill
@@ -84,7 +90,10 @@ def compute_bill_totals(card, period_start, period_end):
 def _sync_bill_debt(bill):
     debt = DebtItem.objects.select_for_update().filter(bill=bill).first()
     if bill.total_amount <= 0:
-        if debt and debt.status not in (DebtItem.Status.PAID, DebtItem.Status.CANCELLED):
+        if debt and debt.status not in (
+            DebtItem.Status.PAID,
+            DebtItem.Status.CANCELLED,
+        ):
             debt.status = DebtItem.Status.CANCELLED
             debt.save(update_fields=["status", "updated_at"])
         return debt
@@ -105,7 +114,11 @@ def _sync_bill_debt(bill):
         title=title,
         due_date=bill.due_date,
         amount=D(bill.total_amount),
-        status=DebtItem.Status.OVERDUE if bill.due_date < today_local() else DebtItem.Status.PENDING,
+        status=(
+            DebtItem.Status.OVERDUE
+            if bill.due_date < today_local()
+            else DebtItem.Status.PENDING
+        ),
     )
 
 
@@ -124,7 +137,9 @@ def refresh_bill(bill, close=False):
         plan__credit_card=bill.card,
         bill_period_start=bill.period_start,
         bill_period_end=bill.period_end,
-    ).exclude(status__in=[InstallmentPeriod.Status.PAID, InstallmentPeriod.Status.CANCELLED]).update(
+    ).exclude(
+        status__in=[InstallmentPeriod.Status.PAID, InstallmentPeriod.Status.CANCELLED]
+    ).update(
         status=InstallmentPeriod.Status.BILLED, bill=bill
     )
     if bill.status == CreditCardBill.Status.CLOSED:
@@ -134,7 +149,9 @@ def refresh_bill(bill, close=False):
 
 def assert_card_period_editable(card, occurred_at):
     period_start, period_end = card_period_for(card, occurred_at)
-    bill = CreditCardBill.objects.filter(card=card, period_start=period_start, period_end=period_end).first()
+    bill = CreditCardBill.objects.filter(
+        card=card, period_start=period_start, period_end=period_end
+    ).first()
     if not bill or bill.status != CreditCardBill.Status.CLOSED:
         return
     debt = getattr(bill, "debt_item", None)
@@ -144,7 +161,11 @@ def assert_card_period_editable(card, occurred_at):
 
 def refresh_bill_for_card_date(card, occurred_at):
     period_start, period_end = card_period_for(card, occurred_at)
-    status = CreditCardBill.Status.CLOSED if period_end < today_local() else CreditCardBill.Status.OPEN
+    status = (
+        CreditCardBill.Status.CLOSED
+        if period_end < today_local()
+        else CreditCardBill.Status.OPEN
+    )
     bill = get_or_create_bill(card, period_start, period_end, status=status)
     if period_end < today_local() and bill.status == CreditCardBill.Status.OPEN:
         bill.status = CreditCardBill.Status.CLOSED
@@ -160,17 +181,23 @@ def generate_due_bills(owner=None, as_of=None, history_months=6):
     for card in cards:
         stats["cards"] += 1
         current_start, _ = card_period_for(card, as_of)
-        cursor = add_months(current_start, -history_months, day=card.statement_start_day)
+        cursor = add_months(
+            current_start, -history_months, day=card.statement_start_day
+        )
         while cursor <= current_start:
             start, end = period_by_start(card, cursor)
             if end < as_of:
-                bill = get_or_create_bill(card, start, end, status=CreditCardBill.Status.CLOSED)
+                bill = get_or_create_bill(
+                    card, start, end, status=CreditCardBill.Status.CLOSED
+                )
                 bill.status = CreditCardBill.Status.CLOSED
                 refresh_bill(bill, close=True)
                 stats["closed"] += 1
             cursor = next_period_start(card, cursor)
         open_start, open_end = card_period_for(card, as_of)
-        open_bill = get_or_create_bill(card, open_start, open_end, status=CreditCardBill.Status.OPEN)
+        open_bill = get_or_create_bill(
+            card, open_start, open_end, status=CreditCardBill.Status.OPEN
+        )
         refresh_bill(open_bill)
         stats["open"] += 1
     return stats
@@ -195,7 +222,11 @@ def create_recurring_items(recurring):
                 "title": recurring.name,
                 "due_date": due_date,
                 "amount": recurring.amount,
-                "status": DebtItem.Status.OVERDUE if due_date < today_local() else DebtItem.Status.PENDING,
+                "status": (
+                    DebtItem.Status.OVERDUE
+                    if due_date < today_local()
+                    else DebtItem.Status.PENDING
+                ),
             },
         )
         if item.status not in (DebtItem.Status.PAID, DebtItem.Status.CANCELLED):
@@ -215,7 +246,11 @@ def generate_mortgage_items(loan, months_ahead=12):
         return []
     cutoff = add_months(today_local(), months_ahead)
     schedules = loan.schedules.filter(
-        status__in=[LoanSchedule.Status.PENDING, LoanSchedule.Status.PARTIAL, LoanSchedule.Status.OVERDUE],
+        status__in=[
+            LoanSchedule.Status.PENDING,
+            LoanSchedule.Status.PARTIAL,
+            LoanSchedule.Status.OVERDUE,
+        ],
         due_date__lte=cutoff,
     ).select_related("loan")
     items = []
@@ -229,9 +264,11 @@ def generate_mortgage_items(loan, months_ahead=12):
                 "period_no": schedule.period_no,
                 "due_date": schedule.due_date,
                 "amount": schedule.total_due,
-                "status": DebtItem.Status.OVERDUE
-                if schedule.due_date < today_local()
-                else DebtItem.Status.PENDING,
+                "status": (
+                    DebtItem.Status.OVERDUE
+                    if schedule.due_date < today_local()
+                    else DebtItem.Status.PENDING
+                ),
             },
         )
         if item.status not in (DebtItem.Status.PAID, DebtItem.Status.CANCELLED):
@@ -270,14 +307,18 @@ def _category_for_debt(owner, item):
     if item.kind == DebtItem.Kind.MORTGAGE:
         return _get_or_create_general(owner, "房贷")
     if item.recurring_debt_id and item.recurring_debt.category_id:
-        category = Category.objects.filter(id=item.recurring_debt.category_id, owner=owner).first()
+        category = Category.objects.filter(
+            id=item.recurring_debt.category_id, owner=owner
+        ).first()
         if category:
             return category
     return _get_or_create_general(owner, "债务支出")
 
 
 def _get_or_create_general(owner, name):
-    category = Category.objects.filter(owner=owner, name=name, kind=Category.Kind.GENERAL).first()
+    category = Category.objects.filter(
+        owner=owner, name=name, kind=Category.Kind.GENERAL
+    ).first()
     if category:
         return category
     return Category.objects.create(owner=owner, name=name, kind=Category.Kind.GENERAL)
@@ -293,7 +334,11 @@ def _validate_settlement_channel(item, channel, account, credit_card):
             raise ValidationError({"channel": "信用卡还款只能使用储蓄卡、支付宝或微信"})
         if not account or account.owner_id != item.owner_id:
             raise ValidationError({"account": "请选择还款账户"})
-        if account.type not in (Account.Type.SAVINGS, Account.Type.ALIPAY, Account.Type.WECHAT):
+        if account.type not in (
+            Account.Type.SAVINGS,
+            Account.Type.ALIPAY,
+            Account.Type.WECHAT,
+        ):
             raise ValidationError({"account": "信用卡还款账户类型不正确"})
         return
     if item.kind == DebtItem.Kind.MORTGAGE and channel not in (
@@ -311,7 +356,10 @@ def _validate_settlement_channel(item, channel, account, credit_card):
         raise ValidationError({"account": "请选择支付账户"})
     expected = {
         DebtPayment.Channel.CASH: Account.Type.SAVINGS,
-        DebtPayment.Channel.PROVIDENT_FUND: {Account.Type.PROVIDENT_FUND_MAIN, Account.Type.PROVIDENT_FUND_SUPP},
+        DebtPayment.Channel.PROVIDENT_FUND: {
+            Account.Type.PROVIDENT_FUND_MAIN,
+            Account.Type.PROVIDENT_FUND_SUPP,
+        },
         DebtPayment.Channel.ALIPAY: Account.Type.ALIPAY,
         DebtPayment.Channel.WECHAT: Account.Type.WECHAT,
     }[channel]
@@ -336,12 +384,20 @@ def _mark_debt_paid_side_effects(item):
         if loan.schedules.exclude(status=LoanSchedule.Status.PAID).count() == 0:
             loan.status = Loan.Status.SETTLED
             loan.save(update_fields=["status", "updated_at"])
-    if item.kind == DebtItem.Kind.CREDIT_CARD and item.bill_id and item.status == DebtItem.Status.PAID:
-        item.bill.installment_periods.exclude(status=InstallmentPeriod.Status.CANCELLED).update(
-            status=InstallmentPeriod.Status.PAID
-        )
-        for plan in item.bill.card.installment_plans.filter(status=InstallmentPlan.Status.ACTIVE):
-            if not plan.period_rows.exclude(status=InstallmentPeriod.Status.PAID).exists():
+    if (
+        item.kind == DebtItem.Kind.CREDIT_CARD
+        and item.bill_id
+        and item.status == DebtItem.Status.PAID
+    ):
+        item.bill.installment_periods.exclude(
+            status=InstallmentPeriod.Status.CANCELLED
+        ).update(status=InstallmentPeriod.Status.PAID)
+        for plan in item.bill.card.installment_plans.filter(
+            status=InstallmentPlan.Status.ACTIVE
+        ):
+            if not plan.period_rows.exclude(
+                status=InstallmentPeriod.Status.PAID
+            ).exists():
                 plan.status = InstallmentPlan.Status.COMPLETED
                 plan.save(update_fields=["status", "updated_at"])
 
@@ -369,7 +425,9 @@ def settle_debt(
     if pay_amount == 0 and discount == 0:
         raise ValidationError({"amount": "还款金额和减免金额不能同时为 0"})
     if idempotency_key:
-        existing = DebtPayment.objects.filter(owner=owner, idempotency_key=idempotency_key).first()
+        existing = DebtPayment.objects.filter(
+            owner=owner, idempotency_key=idempotency_key
+        ).first()
         if existing:
             return existing
     item = (
@@ -381,9 +439,13 @@ def settle_debt(
         raise ValidationError({"detail": "债务项已取消"})
     if item.status == DebtItem.Status.PAID:
         raise ValidationError({"detail": "债务项已结清"})
-    payable = max(D(item.amount) - D(item.discount_amount) - D(item.paid_amount), D("0"))
+    payable = max(
+        D(item.amount) - D(item.discount_amount) - D(item.paid_amount), D("0")
+    )
     if pay_amount + discount > payable:
-        raise ValidationError({"amount": f"还款金额加减免金额不能超过应付金额 {payable}"})
+        raise ValidationError(
+            {"amount": f"还款金额加减免金额不能超过应付金额 {payable}"}
+        )
     _validate_settlement_channel(item, channel, account, credit_card)
     paid_at = paid_at or timezone.now()
 
@@ -403,6 +465,11 @@ def settle_debt(
     txn = None
     if pay_amount > 0:
         if item.kind == DebtItem.Kind.CREDIT_CARD:
+            repayment_card = item.bill.card if item.bill_id else item.legacy_card
+            if repayment_card is None:
+                raise ValidationError(
+                    {"detail": "历史信用卡关联不完整，请先核对原始记录"}
+                )
             txn = create_transaction(
                 owner=owner,
                 txn_type=Transaction.Type.TRANSFER_OUT,
@@ -411,8 +478,8 @@ def settle_debt(
                 occurred_at=paid_at,
                 settlement_channel=channel,
                 account=account,
-                credit_card=item.bill.card,
-                note=note or f"信用卡还款：{item.bill.card.name}",
+                credit_card=repayment_card,
+                note=note or f"信用卡还款：{repayment_card.name}",
                 source=Transaction.Source.DEBT_PAYMENT,
                 source_id=item.id,
                 idempotency_key=f"debtpay:{payment.id}",
@@ -426,9 +493,11 @@ def settle_debt(
                 category=_category_for_debt(owner, item),
                 amount=pay_amount,
                 occurred_at=paid_at,
-                settlement_channel=Transaction.SettlementChannel.CREDIT_CARD
-                if channel == DebtPayment.Channel.CREDIT_CARD
-                else channel,
+                settlement_channel=(
+                    Transaction.SettlementChannel.CREDIT_CARD
+                    if channel == DebtPayment.Channel.CREDIT_CARD
+                    else channel
+                ),
                 account=account,
                 credit_card=credit_card,
                 note=note or f"债务还款：{item.title}",
@@ -441,6 +510,7 @@ def settle_debt(
         payment.save(update_fields=["transaction_id", "updated_at"])
     item.paid_amount = D(item.paid_amount) + pay_amount
     item.discount_amount = D(item.discount_amount) + discount
+    item.save(update_fields=["paid_amount", "discount_amount", "updated_at"])
     item.refresh_status()
     _mark_debt_paid_side_effects(item)
     return payment
@@ -450,14 +520,20 @@ def auto_settle_due_items(owner=None, as_of=None):
     as_of = as_of or today_local()
     qs = DebtItem.objects.filter(
         due_date__lte=as_of,
-        status__in=[DebtItem.Status.PENDING, DebtItem.Status.PARTIAL, DebtItem.Status.OVERDUE],
+        status__in=[
+            DebtItem.Status.PENDING,
+            DebtItem.Status.PARTIAL,
+            DebtItem.Status.OVERDUE,
+        ],
     ).select_related("loan_schedule__loan__offset_plan__pf_account", "recurring_debt")
     if owner is not None:
         qs = qs.filter(owner=owner)
     stats = {"settled": 0, "failed": 0}
     for item in qs:
         try:
-            payable = max(D(item.amount) - D(item.discount_amount) - D(item.paid_amount), D("0"))
+            payable = max(
+                D(item.amount) - D(item.discount_amount) - D(item.paid_amount), D("0")
+            )
             if payable <= 0:
                 continue
             if item.kind == DebtItem.Kind.MORTGAGE and item.loan_schedule_id:
@@ -469,7 +545,11 @@ def auto_settle_due_items(owner=None, as_of=None):
                     if plan.mode == "FULL":
                         offset = payable if pf_balance >= payable else D("0")
                     else:
-                        cap = D(plan.monthly_cap) if plan.monthly_cap is not None else payable
+                        cap = (
+                            D(plan.monthly_cap)
+                            if plan.monthly_cap is not None
+                            else payable
+                        )
                         offset = min(pf_balance, cap, payable)
                     if offset > 0:
                         settle_debt(
@@ -483,7 +563,11 @@ def auto_settle_due_items(owner=None, as_of=None):
                         )
                         remaining = payable - offset
                         stats["settled"] += 1
-                    if remaining > 0 and plan.auto_pay_cash and loan.repayment_account_id:
+                    if (
+                        remaining > 0
+                        and plan.auto_pay_cash
+                        and loan.repayment_account_id
+                    ):
                         settle_debt(
                             owner=item.owner,
                             debt_item=item,
@@ -505,7 +589,11 @@ def auto_settle_due_items(owner=None, as_of=None):
                         note="房贷自动扣款",
                     )
                     stats["settled"] += 1
-            elif item.kind == DebtItem.Kind.PERIODIC and item.recurring_debt and item.recurring_debt.auto_pay:
+            elif (
+                item.kind == DebtItem.Kind.PERIODIC
+                and item.recurring_debt
+                and item.recurring_debt.auto_pay
+            ):
                 recurring = item.recurring_debt
                 channel = recurring.payment_channel or DebtPayment.Channel.CASH
                 if channel == DebtPayment.Channel.CREDIT_CARD:
@@ -541,17 +629,24 @@ def card_liability(card):
     unpaid_items = DebtItem.objects.filter(
         owner=card.owner,
         kind=DebtItem.Kind.CREDIT_CARD,
-        bill__card=card,
-        status__in=[DebtItem.Status.PENDING, DebtItem.Status.PARTIAL, DebtItem.Status.OVERDUE],
-    )
+        # Imported statement facts can exist without a reconstructable cycle.
+        status__in=[
+            DebtItem.Status.PENDING,
+            DebtItem.Status.PARTIAL,
+            DebtItem.Status.OVERDUE,
+        ],
+    ).filter(Q(bill__card=card) | Q(legacy_card=card))
     unpaid = sum(
-        (max(D(item.amount) - D(item.discount_amount) - D(item.paid_amount), D("0")) for item in unpaid_items),
+        (
+            max(D(item.amount) - D(item.discount_amount) - D(item.paid_amount), D("0"))
+            for item in unpaid_items
+        ),
         D("0"),
     )
     open_bill_total = (
-        CreditCardBill.objects.filter(owner=card.owner, card=card, status=CreditCardBill.Status.OPEN).aggregate(
-            total=Sum("total_amount")
-        )["total"]
+        CreditCardBill.objects.filter(
+            owner=card.owner, card=card, status=CreditCardBill.Status.OPEN
+        ).aggregate(total=Sum("total_amount"))["total"]
         or 0
     )
     future_installment = (
@@ -575,7 +670,11 @@ def card_summary(card):
         DebtItem.objects.filter(
             owner=card.owner,
             bill__card=card,
-            status__in=[DebtItem.Status.PENDING, DebtItem.Status.PARTIAL, DebtItem.Status.OVERDUE],
+            status__in=[
+                DebtItem.Status.PENDING,
+                DebtItem.Status.PARTIAL,
+                DebtItem.Status.OVERDUE,
+            ],
         )
         .order_by("due_date")
         .first()
@@ -602,7 +701,13 @@ def unpaid_debt_total(owner):
     total = Decimal("0")
     for item in DebtItem.objects.filter(
         owner=owner,
-        status__in=[DebtItem.Status.PENDING, DebtItem.Status.PARTIAL, DebtItem.Status.OVERDUE],
+        status__in=[
+            DebtItem.Status.PENDING,
+            DebtItem.Status.PARTIAL,
+            DebtItem.Status.OVERDUE,
+        ],
     ):
-        total += max(D(item.amount) - D(item.discount_amount) - D(item.paid_amount), D("0"))
+        total += max(
+            D(item.amount) - D(item.discount_amount) - D(item.paid_amount), D("0")
+        )
     return total

@@ -9,11 +9,28 @@ from rest_framework.exceptions import ValidationError
 
 from apps.accounts.models import Account
 from apps.accounts.services import account_balance
-from apps.common.utils.dates import add_months, due_date_for_period, statement_period_for, today_local
+from apps.common.utils.dates import (
+    add_months,
+    due_date_for_period,
+    statement_period_for,
+    today_local,
+)
 from apps.common.utils.money import D, money, split_money
-from apps.debts.cycles import card_period_for, next_period_start, period_by_start, period_due_date
+from apps.debts.cycles import (
+    card_period_for,
+    next_period_start,
+    period_by_start,
+    period_due_date,
+)
 
-from .models import AccountTransfer, Category, InstallmentPeriod, InstallmentPlan, Tag, Transaction
+from .models import (
+    AccountTransfer,
+    Category,
+    InstallmentPeriod,
+    InstallmentPlan,
+    Tag,
+    Transaction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +42,7 @@ CHANNEL_BY_ACCOUNT_TYPE = {
     Account.Type.WEALTH: Transaction.SettlementChannel.WEALTH,
     Account.Type.ALIPAY: Transaction.SettlementChannel.ALIPAY,
     Account.Type.WECHAT: Transaction.SettlementChannel.WECHAT,
+    Account.Type.WALLET: Transaction.SettlementChannel.WALLET,
 }
 
 EXPECTED_ACCOUNT_TYPES = {
@@ -37,6 +55,7 @@ EXPECTED_ACCOUNT_TYPES = {
     Transaction.SettlementChannel.WECHAT: {Account.Type.WECHAT},
     Transaction.SettlementChannel.STOCK: {Account.Type.STOCK},
     Transaction.SettlementChannel.WEALTH: {Account.Type.WEALTH},
+    Transaction.SettlementChannel.WALLET: {Account.Type.WALLET},
 }
 
 
@@ -44,7 +63,9 @@ def channel_for_account(account):
     try:
         return CHANNEL_BY_ACCOUNT_TYPE[account.type]
     except KeyError as exc:
-        raise ValidationError({"detail": f"账户「{account.name}」不支持作为资金账户"}) from exc
+        raise ValidationError(
+            {"detail": f"账户「{account.name}」不支持作为资金账户"}
+        ) from exc
 
 
 def generate_txn_no():
@@ -52,14 +73,18 @@ def generate_txn_no():
 
 
 def get_or_create_category(owner, name, kind=Category.Kind.GENERAL, parent=None):
-    category = Category.objects.filter(owner=owner, name=name, kind=kind, parent=parent).first()
+    category = Category.objects.filter(
+        owner=owner, name=name, kind=kind, parent=parent
+    ).first()
     if category:
         return category
     return Category.objects.create(owner=owner, name=name, kind=kind, parent=parent)
 
 
 def system_category(owner, kind):
-    category = Category.objects.filter(owner=owner, kind=kind, is_system=True, is_active=True).first()
+    category = Category.objects.filter(
+        owner=owner, kind=kind, is_system=True, is_active=True
+    ).first()
     if category:
         return category
     name = dict(Category.Kind.choices).get(kind, kind)
@@ -75,9 +100,17 @@ def _validate_category(owner, category, txn_type, operation):
         raise ValidationError({"category": "退款分类只能用于退款流水"})
     if txn_type == Transaction.Type.REFUND and category.kind != Category.Kind.REFUND:
         raise ValidationError({"category": "退款流水必须使用退款分类"})
-    if category.kind in (Category.Kind.INVESTMENT, Category.Kind.STOCK) and operation == Transaction.Operation.NONE:
-        raise ValidationError({"operation": "投资/股票流水必须选择建仓、加仓、减仓或分红操作"})
-    if operation != Transaction.Operation.NONE and category.kind not in (Category.Kind.INVESTMENT, Category.Kind.STOCK):
+    if (
+        category.kind in (Category.Kind.INVESTMENT, Category.Kind.STOCK)
+        and operation == Transaction.Operation.NONE
+    ):
+        raise ValidationError(
+            {"operation": "投资/股票流水必须选择建仓、加仓、减仓或分红操作"}
+        )
+    if operation != Transaction.Operation.NONE and category.kind not in (
+        Category.Kind.INVESTMENT,
+        Category.Kind.STOCK,
+    ):
         raise ValidationError({"operation": "只有投资/股票分类可以设置投资操作"})
 
 
@@ -102,7 +135,9 @@ def _check_balance(account, amount):
         return
     current = account_balance(account)
     if current < amount:
-        raise ValidationError({"detail": f"账户「{account.name}」余额不足，当前 {current}，需要 {amount}"})
+        raise ValidationError(
+            {"detail": f"账户「{account.name}」余额不足，当前 {current}，需要 {amount}"}
+        )
 
 
 def _validate_refund(owner, original, amount):
@@ -113,9 +148,9 @@ def _validate_refund(owner, original, amount):
     if original.type != Transaction.Type.EXPENSE:
         raise ValidationError({"refund_of": "只能对支出流水发起退款"})
     refunded = (
-        Transaction.objects.filter(refund_of=original, status=Transaction.Status.POSTED).aggregate(
-            total=Sum("amount")
-        )["total"]
+        Transaction.objects.filter(
+            refund_of=original, status=Transaction.Status.POSTED
+        ).aggregate(total=Sum("amount"))["total"]
         or 0
     )
     if D(refunded) + D(amount) > D(original.amount):
@@ -167,13 +202,20 @@ def create_transaction(
         raise ValidationError({"amount": "金额必须大于 0"})
     occurred_at = occurred_at or timezone.now()
     if idempotency_key:
-        existing = Transaction.objects.filter(owner=owner, idempotency_key=idempotency_key).first()
+        existing = Transaction.objects.filter(
+            owner=owner, idempotency_key=idempotency_key
+        ).first()
         if existing:
             return existing
 
     _validate_category(owner, category, txn_type, operation)
-    _validate_channel(owner, settlement_channel, account, credit_card, allow_card_reference)
-    if txn_type not in (Transaction.Type.INCOME, Transaction.Type.REFUND) and check_balance:
+    _validate_channel(
+        owner, settlement_channel, account, credit_card, allow_card_reference
+    )
+    if (
+        txn_type not in (Transaction.Type.INCOME, Transaction.Type.REFUND)
+        and check_balance
+    ):
         if settlement_channel != Transaction.SettlementChannel.CREDIT_CARD:
             _check_balance(account, amount)
     if txn_type == Transaction.Type.REFUND:
@@ -222,7 +264,9 @@ def create_transaction(
                     raise ValidationError({"tags": "标签不存在"})
                 tag_ids.append(tag.id)
             else:
-                tag_obj, _ = Tag.objects.get_or_create(owner=owner, name=str(tag), defaults={"color": "#909399"})
+                tag_obj, _ = Tag.objects.get_or_create(
+                    owner=owner, name=str(tag), defaults={"color": "#909399"}
+                )
                 tag_ids.append(tag_obj.id)
         txn.tags.set(tag_ids)
     if not skip_bill_refresh:
@@ -235,7 +279,9 @@ def update_transaction(txn, *, data, tags=None):
     if txn.status != Transaction.Status.POSTED:
         raise ValidationError({"detail": "已作废流水不能修改"})
     if txn.source != Transaction.Source.MANUAL:
-        raise ValidationError({"detail": "系统生成流水不能直接修改，请通过对应业务操作处理"})
+        raise ValidationError(
+            {"detail": "系统生成流水不能直接修改，请通过对应业务操作处理"}
+        )
     old_account = txn.account
     old_card = txn.credit_card
     old_occurred = txn.occurred_at
@@ -302,16 +348,22 @@ def void_transaction(txn, reason=""):
     if txn.status != Transaction.Status.POSTED:
         raise ValidationError({"detail": "流水已作废"})
     if txn.source != Transaction.Source.MANUAL:
-        raise ValidationError({"detail": "系统生成流水不能直接作废，请通过对应业务操作处理"})
+        raise ValidationError(
+            {"detail": "系统生成流水不能直接作废，请通过对应业务操作处理"}
+        )
     if txn.refunds.filter(status=Transaction.Status.POSTED).exists():
         raise ValidationError({"detail": "该流水已有退款记录，不能作废"})
     if txn.transfer_id:
-        related = Transaction.objects.filter(transfer=txn.transfer, status=Transaction.Status.POSTED)
+        related = Transaction.objects.filter(
+            transfer=txn.transfer, status=Transaction.Status.POSTED
+        )
         for item in related:
             item.status = Transaction.Status.VOID
             item.voided_at = timezone.now()
             item.void_reason = reason or "转账作废"
-            item.save(update_fields=["status", "voided_at", "void_reason", "updated_at"])
+            item.save(
+                update_fields=["status", "voided_at", "void_reason", "updated_at"]
+            )
         return txn
     if txn.installment_plan_id:
         raise ValidationError({"detail": "分期购买流水不能直接作废，请先取消分期计划"})
@@ -326,7 +378,16 @@ def void_transaction(txn, reason=""):
 
 
 @db_transaction.atomic
-def create_refund(*, owner, original, amount, occurred_at=None, note="", cancel_installment=False, asset=None):
+def create_refund(
+    *,
+    owner,
+    original,
+    amount,
+    occurred_at=None,
+    note="",
+    cancel_installment=False,
+    asset=None,
+):
     amount = money(amount)
     if amount <= 0:
         raise ValidationError({"amount": "退款金额必须大于 0"})
@@ -336,7 +397,10 @@ def create_refund(*, owner, original, amount, occurred_at=None, note="", cancel_
             raise ValidationError({"detail": "原流水为分期购买，请先取消后续分期期次"})
         plan = original.installment_plan
         plan.period_rows.filter(
-            status__in=[InstallmentPeriod.Status.PENDING, InstallmentPeriod.Status.BILLED]
+            status__in=[
+                InstallmentPeriod.Status.PENDING,
+                InstallmentPeriod.Status.BILLED,
+            ]
         ).update(status=InstallmentPeriod.Status.CANCELLED)
         plan.status = InstallmentPlan.Status.CANCELLED
         plan.save(update_fields=["status", "updated_at"])
@@ -361,7 +425,17 @@ def create_refund(*, owner, original, amount, occurred_at=None, note="", cancel_
 
 
 @db_transaction.atomic
-def create_transfer(*, owner, from_account, to_account, amount, fee=D("0"), occurred_at=None, note="", idempotency_key=None):
+def create_transfer(
+    *,
+    owner,
+    from_account,
+    to_account,
+    amount,
+    fee=D("0"),
+    occurred_at=None,
+    note="",
+    idempotency_key=None,
+):
     amount = money(amount)
     fee = money(fee)
     if amount <= 0:
@@ -375,7 +449,9 @@ def create_transfer(*, owner, from_account, to_account, amount, fee=D("0"), occu
     if from_account.currency != to_account.currency:
         raise ValidationError({"detail": "暂不支持跨币种转账"})
     if idempotency_key:
-        existing = AccountTransfer.objects.filter(owner=owner, idempotency_key=idempotency_key).first()
+        existing = AccountTransfer.objects.filter(
+            owner=owner, idempotency_key=idempotency_key
+        ).first()
         if existing:
             return existing
     _check_balance(from_account, amount + fee)
@@ -422,12 +498,20 @@ def create_transfer(*, owner, from_account, to_account, amount, fee=D("0"), occu
     )
     transfer.out_transaction_id = out_txn.id
     transfer.in_transaction_id = in_txn.id
-    transfer.save(update_fields=["out_transaction_id", "in_transaction_id", "updated_at"])
+    transfer.save(
+        update_fields=["out_transaction_id", "in_transaction_id", "updated_at"]
+    )
     return transfer
 
 
 def preview_installment(
-    *, card, principal, periods, fee_mode=InstallmentPlan.FeeMode.NONE, fee_rate=Decimal("0"), purchase_at=None
+    *,
+    card,
+    principal,
+    periods,
+    fee_mode=InstallmentPlan.FeeMode.NONE,
+    fee_rate=Decimal("0"),
+    purchase_at=None,
 ):
     principal = money(principal)
     periods = int(periods)
@@ -547,7 +631,12 @@ def installment_remaining_principal(owner):
             owner=owner,
             plan__status=InstallmentPlan.Status.ACTIVE,
         )
-        .exclude(status__in=[InstallmentPeriod.Status.PAID, InstallmentPeriod.Status.CANCELLED])
+        .exclude(
+            status__in=[
+                InstallmentPeriod.Status.PAID,
+                InstallmentPeriod.Status.CANCELLED,
+            ]
+        )
         .aggregate(total=Sum("principal_part"))["total"]
         or 0
     )

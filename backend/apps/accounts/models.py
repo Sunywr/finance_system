@@ -16,13 +16,22 @@ class Account(OwnedModel):
         WEALTH = "WEALTH", "理财账户"
         ALIPAY = "ALIPAY", "支付宝"
         WECHAT = "WECHAT", "微信"
+        WALLET = "WALLET", "其他钱包"
 
     name = models.CharField(max_length=80, verbose_name="账户名称")
-    type = models.CharField(max_length=32, choices=Type.choices, verbose_name="账户类型")
-    institution = models.CharField(max_length=80, blank=True, default="", verbose_name="机构")
-    account_no_masked = models.CharField(max_length=40, blank=True, default="", verbose_name="账号后四位")
+    type = models.CharField(
+        max_length=32, choices=Type.choices, verbose_name="账户类型"
+    )
+    institution = models.CharField(
+        max_length=80, blank=True, default="", verbose_name="机构"
+    )
+    account_no_masked = models.CharField(
+        max_length=40, blank=True, default="", verbose_name="账号后四位"
+    )
     currency = models.CharField(max_length=8, default="CNY", verbose_name="币种")
-    opening_balance = models.DecimalField(max_digits=18, decimal_places=2, default=D("0"), verbose_name="期初余额")
+    opening_balance = models.DecimalField(
+        max_digits=18, decimal_places=2, default=D("0"), verbose_name="期初余额"
+    )
     opening_date = models.DateField(default=timezone.localdate, verbose_name="期初日期")
     allow_negative = models.BooleanField(default=False, verbose_name="允许负余额")
     is_active = models.BooleanField(default=True, verbose_name="启用")
@@ -45,9 +54,17 @@ class ProvidentFundProfile(TimeStampedModel):
         SUPPLEMENTARY = "SUPPLEMENTARY", "补充账户"
 
     account = models.OneToOneField(
-        Account, on_delete=models.CASCADE, related_name="pf_profile", verbose_name="公积金账户"
+        Account,
+        on_delete=models.CASCADE,
+        related_name="pf_profile",
+        verbose_name="公积金账户",
     )
-    fund_type = models.CharField(max_length=20, choices=FundType.choices, default=FundType.MAIN, verbose_name="账户性质")
+    fund_type = models.CharField(
+        max_length=20,
+        choices=FundType.choices,
+        default=FundType.MAIN,
+        verbose_name="账户性质",
+    )
     monthly_employee_amount = models.DecimalField(
         max_digits=18, decimal_places=2, default=D("0"), verbose_name="个人月缴"
     )
@@ -55,9 +72,13 @@ class ProvidentFundProfile(TimeStampedModel):
         max_digits=18, decimal_places=2, default=D("0"), verbose_name="单位月缴"
     )
     contribution_day = models.IntegerField(
-        default=10, validators=[MinValueValidator(1), MaxValueValidator(28)], verbose_name="每月缴存日"
+        default=10,
+        validators=[MinValueValidator(1), MaxValueValidator(28)],
+        verbose_name="每月缴存日",
     )
-    auto_contribute = models.BooleanField(default=False, verbose_name="自动生成月缴流水")
+    auto_contribute = models.BooleanField(
+        default=False, verbose_name="自动生成月缴流水"
+    )
     city = models.CharField(max_length=40, blank=True, default="", verbose_name="城市")
 
     class Meta:
@@ -70,9 +91,13 @@ class ProvidentFundProfile(TimeStampedModel):
 
 
 class UserSetting(TimeStampedModel):
-    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="setting")
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="setting"
+    )
     payday = models.IntegerField(
-        default=10, validators=[MinValueValidator(1), MaxValueValidator(31)], verbose_name="发薪日"
+        default=10,
+        validators=[MinValueValidator(1), MaxValueValidator(31)],
+        verbose_name="发薪日",
     )
     salary_amount = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True, verbose_name="预计月薪"
@@ -86,7 +111,9 @@ class UserSetting(TimeStampedModel):
         verbose_name="工资账户",
     )
     currency = models.CharField(max_length=8, default="CNY", verbose_name="币种")
-    dashboard_prefs = models.JSONField(default=dict, blank=True, verbose_name="总览偏好")
+    dashboard_prefs = models.JSONField(
+        default=dict, blank=True, verbose_name="总览偏好"
+    )
 
     class Meta:
         verbose_name = "用户设置"

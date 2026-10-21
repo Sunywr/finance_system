@@ -20,6 +20,7 @@
         <el-menu-item index="/intelligence"><el-icon><Aim /></el-icon><span>投资智能</span></el-menu-item>
         <el-menu-item index="/ai"><el-icon><MagicStick /></el-icon><span>AI 分析</span></el-menu-item>
         <el-menu-item index="/settings"><el-icon><Setting /></el-icon><span>设置</span></el-menu-item>
+        <el-menu-item index="/history"><el-icon><Tickets /></el-icon><span>家庭与历史资料</span></el-menu-item>
       </el-menu>
     </el-aside>
     <el-container class="content">

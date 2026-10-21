@@ -2,9 +2,9 @@ import multiprocessing
 import os
 
 bind = os.getenv("GUNICORN_BIND", "127.0.0.1:8000")
-workers = int(os.getenv("GUNICORN_WORKERS", str(multiprocessing.cpu_count() * 2 + 1)))
+workers = int(os.getenv("GUNICORN_WORKERS", str(min(2, multiprocessing.cpu_count()))))
 worker_class = os.getenv("GUNICORN_WORKER_CLASS", "gthread")
-threads = int(os.getenv("GUNICORN_THREADS", "4"))
+threads = int(os.getenv("GUNICORN_THREADS", "2"))
 timeout = int(os.getenv("GUNICORN_TIMEOUT", "300"))
 graceful_timeout = 60
 keepalive = 5

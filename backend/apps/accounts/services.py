@@ -13,6 +13,10 @@ def balance_breakdown(account, as_of=None):
     from apps.ledger.models import Transaction
 
     qs = Transaction.objects.filter(account=account, status=Transaction.Status.POSTED)
+    basis = getattr(account, "imported_balance", None)
+    use_basis = basis is not None and (as_of is None or day_end(as_of) >= basis.as_of)
+    if use_basis:
+        qs = qs.filter(occurred_at__gt=basis.as_of).exclude(source="LEGACY")
     if as_of:
         qs = qs.filter(occurred_at__lte=day_end(as_of))
     agg = qs.aggregate(
@@ -27,9 +31,10 @@ def balance_breakdown(account, as_of=None):
     expense = D(agg["expense"] or 0)
     transfer_in = D(agg["transfer_in"] or 0)
     transfer_out = D(agg["transfer_out"] or 0)
-    current = D(account.opening_balance) + income + refund - expense + transfer_in - transfer_out
+    opening = D(basis.balance) if use_basis else D(account.opening_balance)
+    current = opening + income + refund - expense + transfer_in - transfer_out
     return {
-        "opening_balance": D(account.opening_balance),
+        "opening_balance": opening,
         "income": income,
         "refund": refund,
         "expense": expense,
@@ -48,7 +53,9 @@ def balances_for_owner(owner, as_of=None):
 
     accounts = list(Account.objects.filter(owner=owner))
     mapping = {account.id: D(account.opening_balance) for account in accounts}
-    qs = Transaction.objects.filter(owner=owner, status=Transaction.Status.POSTED, account__isnull=False)
+    qs = Transaction.objects.filter(
+        owner=owner, status=Transaction.Status.POSTED, account__isnull=False
+    )
     if as_of:
         qs = qs.filter(occurred_at__lte=day_end(as_of))
     rows = qs.values("account_id").annotate(
@@ -68,6 +75,13 @@ def balances_for_owner(owner, as_of=None):
             + D(row["transfer_in"] or 0)
             - D(row["transfer_out"] or 0)
         )
+    from apps.legacy.models import AccountBalanceBasis
+
+    for basis in AccountBalanceBasis.objects.filter(
+        account__owner=owner
+    ).select_related("account"):
+        if as_of is None or day_end(as_of) >= basis.as_of:
+            mapping[basis.account_id] = account_balance(basis.account, as_of)
     return mapping
 
 
@@ -75,7 +89,14 @@ def cash_balance(owner, as_of=None):
     mapping = balances_for_owner(owner, as_of)
     total = Decimal("0")
     for account in Account.objects.filter(
-        owner=owner, is_active=True, type__in=[Account.Type.SAVINGS, Account.Type.ALIPAY, Account.Type.WECHAT]
+        owner=owner,
+        is_active=True,
+        type__in=[
+            Account.Type.SAVINGS,
+            Account.Type.ALIPAY,
+            Account.Type.WECHAT,
+            Account.Type.WALLET,
+        ],
     ):
         total += mapping.get(account.id, D(account.opening_balance))
     return total
@@ -89,4 +110,6 @@ def assert_can_debit(account, amount):
         return
     current = account_balance(account)
     if current < amount:
-        raise ValidationError({"detail": f"账户「{account.name}」余额不足，当前 {current}，需要 {amount}"})
+        raise ValidationError(
+            {"detail": f"账户「{account.name}」余额不足，当前 {current}，需要 {amount}"}
+        )

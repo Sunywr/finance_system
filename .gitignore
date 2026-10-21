@@ -49,3 +49,6 @@ Thumbs.db
 # Runtime
 backups/
 logs/
+.codegraph/
+.mysql-dev-data/
+.mysql-local-state.json

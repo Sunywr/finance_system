@@ -60,7 +60,9 @@ def _build_rows(principal, annual_rate, months, method):
 
 def _due_date(loan, period_no):
     anchor = loan.first_due_date.replace(day=1)
-    return add_months(anchor, period_no - 1, day=loan.payment_day or loan.first_due_date.day)
+    return add_months(
+        anchor, period_no - 1, day=loan.payment_day or loan.first_due_date.day
+    )
 
 
 @transaction.atomic
@@ -80,7 +82,9 @@ def generate_schedule(loan, keep_paid=True):
     periods_left = loan.term_months - start_period + 1
     if periods_left <= 0:
         return list(loan.schedules.all())
-    rows = _build_rows(remaining_principal, loan.annual_rate, periods_left, loan.repayment_method)
+    rows = _build_rows(
+        remaining_principal, loan.annual_rate, periods_left, loan.repayment_method
+    )
     schedules = []
     for offset, (principal_due, interest_due, total_due, remaining) in enumerate(rows):
         period_no = start_period + offset
@@ -106,8 +110,24 @@ def loan_stats(loan):
     paid_principal = D(paid.aggregate(total=Sum("principal_due"))["total"] or 0)
     paid_interest = D(paid.aggregate(total=Sum("interest_due"))["total"] or 0)
     total_interest = D(schedules.aggregate(total=Sum("interest_due"))["total"] or 0)
+    basis = getattr(loan, "imported_balance", None)
+    remaining_principal = max(D(loan.principal) - paid_principal, D("0"))
+    if basis is not None:
+        new_paid = (
+            paid.exclude(period_no__in=basis.paid_periods).aggregate(
+                total=Sum("principal_due")
+            )["total"]
+            or 0
+        )
+        remaining_principal = max(D(basis.remaining_principal) - D(new_paid), D("0"))
     next_due = (
-        schedules.filter(status__in=[LoanSchedule.Status.PENDING, LoanSchedule.Status.PARTIAL, LoanSchedule.Status.OVERDUE])
+        schedules.filter(
+            status__in=[
+                LoanSchedule.Status.PENDING,
+                LoanSchedule.Status.PARTIAL,
+                LoanSchedule.Status.OVERDUE,
+            ]
+        )
         .order_by("due_date")
         .first()
     )
@@ -116,7 +136,7 @@ def loan_stats(loan):
         "total_interest": total_interest,
         "paid_principal": paid_principal,
         "paid_interest": paid_interest,
-        "remaining_principal": max(D(loan.principal) - paid_principal, D("0")),
+        "remaining_principal": remaining_principal,
         "paid_periods": paid.count(),
         "term_months": loan.term_months,
         "next_due": next_due,
@@ -134,7 +154,11 @@ def simulate_offset(loan, use_new_contributions=None, mode=None, monthly_cap=Non
         rows = []
         cash_total = ZERO
         for item in loan.schedules.filter(
-            status__in=[LoanSchedule.Status.PENDING, LoanSchedule.Status.PARTIAL, LoanSchedule.Status.OVERDUE]
+            status__in=[
+                LoanSchedule.Status.PENDING,
+                LoanSchedule.Status.PARTIAL,
+                LoanSchedule.Status.OVERDUE,
+            ]
         ).order_by("period_no"):
             cash_total += D(item.total_due)
             rows.append(
@@ -158,9 +182,17 @@ def simulate_offset(loan, use_new_contributions=None, mode=None, monthly_cap=Non
             "rows": rows,
         }
 
-    use_new = plan.use_new_contributions if use_new_contributions is None else use_new_contributions
+    use_new = (
+        plan.use_new_contributions
+        if use_new_contributions is None
+        else use_new_contributions
+    )
     mode = mode or plan.mode
-    cap = D(plan.monthly_cap) if monthly_cap is None and plan.monthly_cap is not None else D(monthly_cap) if monthly_cap is not None else None
+    cap = (
+        D(plan.monthly_cap)
+        if monthly_cap is None and plan.monthly_cap is not None
+        else D(monthly_cap) if monthly_cap is not None else None
+    )
     pf_account = plan.pf_account
     balance = account_balance(pf_account)
     profile = getattr(pf_account, "pf_profile", None)
@@ -173,7 +205,11 @@ def simulate_offset(loan, use_new_contributions=None, mode=None, monthly_cap=Non
     first_cash = None
     cash_total = ZERO
     for item in loan.schedules.filter(
-        status__in=[LoanSchedule.Status.PENDING, LoanSchedule.Status.PARTIAL, LoanSchedule.Status.OVERDUE]
+        status__in=[
+            LoanSchedule.Status.PENDING,
+            LoanSchedule.Status.PARTIAL,
+            LoanSchedule.Status.OVERDUE,
+        ]
     ).order_by("period_no"):
         target_months = _month_diff(start_month, item.due_date)
         if monthly_contribution > 0 and target_months > credited_months:
